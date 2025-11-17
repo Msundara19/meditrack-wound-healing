@@ -1,8 +1,9 @@
-opencv-python-headless==4.8.0.76
-numpy==1.26.4
-Pillow==10.0.0
-streamlit==1.29.0
-plotly==5.17.0
-matplotlib==3.8.0
-python-dotenv==1.0.0
-pandas==2.2.3
+opencv-python-headless
+numpy
+Pillow
+streamlit
+plotly
+matplotlib
+python-dotenv
+pandas
+pathway[xpack-llm]
