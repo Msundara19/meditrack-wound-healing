@@ -4,7 +4,10 @@ Real-time wound monitoring with Pathway streaming and Aparavi PHI protection
 """
 from load_env import load_environment
 load_environment()
-
+from meditrack.llm.ai_client import (
+    generate_ai_summary_openai,
+    generate_ai_summary_gemini,
+)
 import streamlit as st
 import cv2
 import numpy as np
