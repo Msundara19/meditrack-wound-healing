@@ -1,12 +1,59 @@
+"""
+LLM client utilities for MediTrack.
+
+Provides:
+- generate_ai_summary_openai(...)
+- generate_ai_summary_gemini(...)
+
+Both return: (summary_markdown: str, risk_level: str)
+"""
+
 import os
 from typing import Dict, Any, Tuple
 
-from openai import OpenAI
-import google.generativeai as genai
+from dotenv import load_dotenv
 
-# --- OpenAI setup -----------------------------------------------------------
+# ---------------------------------------------------------------------
+# Environment loading
+# ---------------------------------------------------------------------
 
-def _get_openai_client() -> OpenAI:
+# Try to load env vars from various locations. This will pick up:
+# - OPENAI_API_KEY
+# - GEMINI_API_KEY
+# - APARAVI_API_KEY
+# - PATHWAY_LICENSE_KEY
+# when present.
+
+def _load_env_if_needed() -> None:
+    """Idempotent env loader – safe to call multiple times."""
+    # Render secret file (if mounted)
+    secret_path = "/etc/secrets/imp.env"
+    if os.path.exists(secret_path):
+        load_dotenv(secret_path)
+    else:
+        # Local dev: .env or imp.env in project root
+        if os.path.exists("imp.env"):
+            load_dotenv("imp.env")
+        else:
+            load_dotenv()  # default .env
+
+
+# ---------------------------------------------------------------------
+# OpenAI client
+# ---------------------------------------------------------------------
+try:
+    from openai import OpenAI  # type: ignore
+except ImportError:
+    OpenAI = None  # type: ignore
+
+
+def _get_openai_client() -> "OpenAI":
+    _load_env_if_needed()
+    if OpenAI is None:
+        raise RuntimeError(
+            "openai package is not installed. Add 'openai' to requirements.txt."
+        )
+
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set in the environment.")
@@ -19,9 +66,11 @@ def generate_ai_summary_openai(
     trend_notes: str,
 ) -> Tuple[str, str]:
     """
-    Returns (summary_md, risk_level) using OpenAI.
-    latest_metrics: e.g. {"wound_area_cm2": 4.3, "redness_score": 0.7, ...}
-    trend_notes: plain-text description of timeline / trend.
+    Generate wound-healing summary using an OpenAI chat model.
+
+    Returns:
+        summary_md: Markdown string
+        risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN'
     """
     client = _get_openai_client()
 
@@ -53,7 +102,8 @@ and then the risk level in ALL CAPS. Example: RISK_LEVEL: MEDIUM
 """
 
     response = client.chat.completions.create(
-        model="gpt-5.1-mini",  # or any other chat model you like
+        # you can switch this to any model you have access to
+        model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -63,22 +113,36 @@ and then the risk level in ALL CAPS. Example: RISK_LEVEL: MEDIUM
 
     content = response.choices[0].message.content.strip()
 
-    # Extract risk level from the last line
+    # Extract risk level from final line
     risk_level = "UNKNOWN"
-    for line in reversed(content.splitlines()):
-        line = line.strip()
+    lines = content.splitlines()
+    for idx in range(len(lines) - 1, -1, -1):
+        line = lines[idx].strip()
         if line.upper().startswith("RISK_LEVEL:"):
             risk_level = line.split(":", 1)[1].strip().upper()
-            # remove that line from the markdown
-            content = "\n".join(content.splitlines()[:-1]).strip()
+            # drop that line from Markdown
+            content = "\n".join(lines[:idx]).strip()
             break
 
     return content, risk_level
 
 
-# --- Gemini setup -----------------------------------------------------------
+# ---------------------------------------------------------------------
+# Gemini client (good FREE option)
+# ---------------------------------------------------------------------
+try:
+    import google.generativeai as genai  # type: ignore
+except ImportError:
+    genai = None  # type: ignore
+
 
 def _configure_gemini():
+    _load_env_if_needed()
+    if genai is None:
+        raise RuntimeError(
+            "google-generativeai package is not installed. "
+            "Add 'google-generativeai' to requirements.txt."
+        )
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is not set in the environment.")
@@ -91,7 +155,11 @@ def generate_ai_summary_gemini(
     trend_notes: str,
 ) -> Tuple[str, str]:
     """
-    Same interface as the OpenAI version, but using Gemini.
+    Generate wound-healing summary using Google Gemini (free-tier friendly).
+
+    Returns:
+        summary_md: Markdown string
+        risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN'
     """
     _configure_gemini()
 
@@ -114,19 +182,36 @@ Trend notes:
 Tasks:
 1. Briefly summarize healing status.
 2. Give 3–5 clear bullet points.
-3. Add a final line with 'RISK_LEVEL: LOW/MEDIUM/HIGH'.
+3. Provide a final line in the format: RISK_LEVEL: LOW/MEDIUM/HIGH
 """
 
     model = genai.GenerativeModel("gemini-1.5-flash")
     resp = model.generate_content(prompt)
     content = resp.text.strip()
 
+    # Extract risk level
     risk_level = "UNKNOWN"
-    for line in reversed(content.splitlines()):
-        line = line.strip()
+    lines = content.splitlines()
+    for idx in range(len(lines) - 1, -1, -1):
+        line = lines[idx].strip()
         if line.upper().startswith("RISK_LEVEL:"):
             risk_level = line.split(":", 1)[1].strip().upper()
-            content = "\n".join(content.splitlines()[:-1]).strip()
+            content = "\n".join(lines[:idx]).strip()
             break
 
     return content, risk_level
+
+
+# ---------------------------------------------------------------------
+# Optional: expose Aparavi & Pathway keys for other modules to reuse
+# (not used directly here, but loaded so they exist in os.environ)
+# ---------------------------------------------------------------------
+
+def get_aparavi_key() -> str | None:
+    _load_env_if_needed()
+    return os.getenv("APARAVI_API_KEY")
+
+
+def get_pathway_license_key() -> str | None:
+    _load_env_if_needed()
+    return os.getenv("PATHWAY_LICENSE_KEY")
