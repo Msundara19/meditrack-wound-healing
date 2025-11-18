@@ -2,16 +2,21 @@
 LLM client utilities for MediTrack.
 
 Providers:
-- Groq (Llama 3.1)  -> generate_ai_summary_groq
+- Groq (Llama 3.x)  -> generate_ai_summary_groq
 - Gemini            -> generate_ai_summary_gemini
 
 Both return: (summary_markdown: str, risk_level: str)
+
+Aparavi:
+- Optional PHI masking of the LLM prompt text when use_aparavi=True.
 """
 
 import os
 from typing import Dict, Any, Tuple
 
 from dotenv import load_dotenv
+import requests  # used for Aparavi HTTP call
+
 
 # ---------------------------------------------------------------------
 # Environment loading
@@ -30,6 +35,57 @@ def _load_env_if_needed() -> None:
             load_dotenv("imp.env")
         else:
             load_dotenv()  # default .env
+
+
+# ---------------------------------------------------------------------
+# Aparavi PHI filter helpers
+# ---------------------------------------------------------------------
+
+
+def get_aparavi_key() -> str | None:
+    _load_env_if_needed()
+    return os.getenv("APARAVI_API_KEY")
+
+
+def _apply_aparavi_phi_filter(text: str) -> str:
+    """
+    Send text to Aparavi for PHI/PII masking.
+
+    IMPORTANT:
+    - The URL, payload shape, and response format here are placeholders.
+    - Replace `APARAVI_API_URL` or the default URL and JSON schema
+      with whatever your actual Aparavi API / SDK expects.
+
+    If anything fails, this function returns the original text.
+    """
+    api_key = get_aparavi_key()
+    if not api_key:
+        return text
+
+    # Configure the real URL via env var. This is a placeholder.
+    url = os.getenv("APARAVI_API_URL", "https://YOUR_APARAVI_ENDPOINT_HERE")
+
+    payload = {
+        "text": text,  # <- change this field name if Aparavi expects a different payload
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        if resp.ok:
+            data = resp.json()
+            # Adjust this according to Aparavi response schema
+            return data.get("filtered_text", data.get("text", text))
+        else:
+            print(f"[Aparavi] HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        print(f"[Aparavi] PHI filter failed: {e}")
+
+    return text
 
 
 # ---------------------------------------------------------------------
@@ -58,9 +114,16 @@ def generate_ai_summary_groq(
     patient_id: str,
     latest_metrics: Dict[str, Any],
     trend_notes: str,
+    use_aparavi: bool = False,
 ) -> Tuple[str, str]:
     """
-    Generate wound-healing summary using Groq (Llama 3.1).
+    Generate wound-healing summary using Groq (Llama 3.x).
+
+    Parameters:
+        patient_id: ID string (can be PHI, which Aparavi will mask if enabled)
+        latest_metrics: dict of numeric metrics
+        trend_notes: human-readable description
+        use_aparavi: if True, send the prompt text through Aparavi PHI filter
 
     Returns:
         summary_md: Markdown string
@@ -95,8 +158,11 @@ RISK_LEVEL:
 and then the risk level in ALL CAPS. Example: RISK_LEVEL: MEDIUM
 """
 
+    if use_aparavi:
+        user_prompt = _apply_aparavi_phi_filter(user_prompt)
+
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",  # or llama-3.1-8b-instant for cheaper/faster
+        model="llama-3.1-8b-instant",  # works on Groq today
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -147,9 +213,10 @@ def generate_ai_summary_gemini(
     patient_id: str,
     latest_metrics: Dict[str, Any],
     trend_notes: str,
+    use_aparavi: bool = False,
 ) -> Tuple[str, str]:
     """
-    Generate wound-healing summary using Google Gemini (free-tier friendly).
+    Generate wound-healing summary using Google Gemini.
 
     Returns:
         summary_md: Markdown string
@@ -179,6 +246,9 @@ Tasks:
 3. Provide a final line in the format: RISK_LEVEL: LOW/MEDIUM/HIGH
 """
 
+    if use_aparavi:
+        prompt = _apply_aparavi_phi_filter(prompt)
+
     model = genai.GenerativeModel("gemini-1.5-flash")
     resp = model.generate_content(prompt)
     content = resp.text.strip()
@@ -197,13 +267,8 @@ Tasks:
 
 
 # ---------------------------------------------------------------------
-# Optional: expose Aparavi & Pathway keys for other modules
+# Pathway key helper (for integration in pathway_pipeline.py)
 # ---------------------------------------------------------------------
-
-
-def get_aparavi_key() -> str | None:
-    _load_env_if_needed()
-    return os.getenv("APARAVI_API_KEY")
 
 
 def get_pathway_license_key() -> str | None:
