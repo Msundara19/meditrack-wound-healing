@@ -105,3 +105,6 @@ stripe>=6.7.0  # Alternative payment processor
 jupyter>=1.0.0
 ipykernel>=6.25.0
 notebook>=7.0.0
+openai
+google-generativeai
+python-dotenv
