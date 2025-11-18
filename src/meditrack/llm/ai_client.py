@@ -1,9 +1,9 @@
 """
 LLM client utilities for MediTrack.
 
-Provides:
-- generate_ai_summary_openai(...)
-- generate_ai_summary_gemini(...)
+Providers:
+- Groq (Llama 3.1)  -> generate_ai_summary_groq
+- Gemini            -> generate_ai_summary_gemini
 
 Both return: (summary_markdown: str, risk_level: str)
 """
@@ -17,12 +17,6 @@ from dotenv import load_dotenv
 # Environment loading
 # ---------------------------------------------------------------------
 
-# Try to load env vars from various locations. This will pick up:
-# - OPENAI_API_KEY
-# - GEMINI_API_KEY
-# - APARAVI_API_KEY
-# - PATHWAY_LICENSE_KEY
-# when present.
 
 def _load_env_if_needed() -> None:
     """Idempotent env loader – safe to call multiple times."""
@@ -31,7 +25,7 @@ def _load_env_if_needed() -> None:
     if os.path.exists(secret_path):
         load_dotenv(secret_path)
     else:
-        # Local dev: .env or imp.env in project root
+        # Local dev: imp.env in project root, then default .env
         if os.path.exists("imp.env"):
             load_dotenv("imp.env")
         else:
@@ -39,40 +33,40 @@ def _load_env_if_needed() -> None:
 
 
 # ---------------------------------------------------------------------
-# OpenAI client
+# Groq client (DEFAULT)
 # ---------------------------------------------------------------------
+
 try:
-    from openai import OpenAI  # type: ignore
+    from groq import Groq  # type: ignore
 except ImportError:
-    OpenAI = None  # type: ignore
+    Groq = None  # type: ignore
 
 
-def _get_openai_client() -> "OpenAI":
+def _get_groq_client() -> "Groq":
     _load_env_if_needed()
-    if OpenAI is None:
+    if Groq is None:
         raise RuntimeError(
-            "openai package is not installed. Add 'openai' to requirements.txt."
+            "groq package is not installed. Add 'groq' to requirements.txt."
         )
-
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set in the environment.")
-    return OpenAI(api_key=api_key)
+        raise RuntimeError("GROQ_API_KEY is not set in the environment.")
+    return Groq(api_key=api_key)
 
 
-def generate_ai_summary_openai(
+def generate_ai_summary_groq(
     patient_id: str,
     latest_metrics: Dict[str, Any],
     trend_notes: str,
 ) -> Tuple[str, str]:
     """
-    Generate wound-healing summary using an OpenAI chat model.
+    Generate wound-healing summary using Groq (Llama 3.1).
 
     Returns:
         summary_md: Markdown string
         risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN'
     """
-    client = _get_openai_client()
+    client = _get_groq_client()
 
     system_prompt = (
         "You are an assistant for educational wound-healing monitoring. "
@@ -102,8 +96,7 @@ and then the risk level in ALL CAPS. Example: RISK_LEVEL: MEDIUM
 """
 
     response = client.chat.completions.create(
-        # you can switch this to any model you have access to
-        model="gpt-4o-mini",
+        model="llama-3.1-70b-versatile",  # or llama-3.1-8b-instant for cheaper/faster
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -128,8 +121,9 @@ and then the risk level in ALL CAPS. Example: RISK_LEVEL: MEDIUM
 
 
 # ---------------------------------------------------------------------
-# Gemini client (good FREE option)
+# Gemini client (optional secondary provider)
 # ---------------------------------------------------------------------
+
 try:
     import google.generativeai as genai  # type: ignore
 except ImportError:
@@ -203,9 +197,9 @@ Tasks:
 
 
 # ---------------------------------------------------------------------
-# Optional: expose Aparavi & Pathway keys for other modules to reuse
-# (not used directly here, but loaded so they exist in os.environ)
+# Optional: expose Aparavi & Pathway keys for other modules
 # ---------------------------------------------------------------------
+
 
 def get_aparavi_key() -> str | None:
     _load_env_if_needed()
