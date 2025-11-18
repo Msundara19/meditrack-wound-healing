@@ -1,20 +1,19 @@
 """
-Pathway pipeline for MediTrack - Wound Healing Monitor
+Lightweight Pathway pipeline for MediTrack - Wound Healing Monitor
 
-- Ingests Aparavi-enriched wound documents from:
-    data/processed/aparavi_results/*.json
+- NO heavy LLM xPacks or docling/unstructured imports.
+- Only uses core Pathway streaming.
 
-- Uses Pathway's streaming engine + LLM xPack to:
-    * Maintain a live table of wound events
-    * Generate short clinical-style summaries
+Pipeline:
+  * Reads Aparavi-enriched JSON files from:
+        data/processed/aparavi_results/*.json
+  * Treats them as a live stream of wound events
+  * Writes them to:
+        data/outputs/wound_events.jsonl
 
-- Writes live output to:
-    data/outputs/wound_events.jsonl
-
-This file ALSO exposes a lightweight `publish_wound_event` function
-used by the Streamlit app. For this hackathon version, that function
-is just a logging stub so that Pathway usage is centered around the
-Aparavi -> Pathway streaming pipeline.
+The Streamlit app:
+  * Calls Groq / Gemini for AI explanations.
+  * Reads this JSONL file in the "📡 Pathway Stream" tab.
 """
 
 import os
@@ -23,10 +22,6 @@ from typing import Any, Dict
 
 import pathway as pw
 from dotenv import load_dotenv
-
-# LLM xPack imports (OpenAI used here; you can swap to others if needed)
-from pathway.xpacks.llm.llms import OpenAIChat
-from pathway.xpacks.llm.splitters import TokenCountSplitter
 
 load_dotenv()
 
@@ -63,8 +58,8 @@ class WoundDocSchema(pw.Schema):
     area_cm2: float
     infection_risk_flag: bool
 
-    # Timestamp of capture / analysis
-    timestamp: str  # we keep as string for now (ISO or similar)
+    # Timestamp of capture / analysis (string is fine)
+    timestamp: str
 
     # Free-text description / OCR summary from Aparavi
     text_summary: str
@@ -72,7 +67,7 @@ class WoundDocSchema(pw.Schema):
 
 # --------------------------------------------------------------------
 # Public function: publish_wound_event
-# (used by Streamlit app; here we keep it as a logging stub)
+# (used by Streamlit app; still just a logging stub)
 # --------------------------------------------------------------------
 
 
@@ -84,12 +79,11 @@ def publish_wound_event(
     """
     Lightweight stub to keep Streamlit happy.
 
-    In a more advanced version, this could:
-      - Push events into Kafka / Pulsar / Redis Stream
-      - Be consumed by a Pathway connector (e.g. Kafka connector)
-      - Merge CV-derived metrics with Aparavi-enriched documents
+    The Streamlit app calls this when "Pathway Streaming" is enabled.
+    For now, we just log to stdout.
 
-    For now, we just print to stdout so judges can see calls.
+    In a future version, this could push CV-derived metrics into
+    a Kafka topic or socket, and a Pathway connector could read them.
     """
     print(
         "[Pathway publish_wound_event] "
@@ -98,21 +92,21 @@ def publish_wound_event(
 
 
 # --------------------------------------------------------------------
-# Pathway pipeline
+# Pathway pipeline (no LLM inside Pathway)
 # --------------------------------------------------------------------
 
 
 def build_pipeline() -> pw.Table:
     """
-    Build the Pathway streaming pipeline:
+    Build a simple Pathway streaming pipeline:
 
     1. Read Aparavi-enriched JSON files from APARAVI_RESULTS_DIR
-    2. Perform light feature engineering
-    3. Use OpenAI LLM via Pathway xPack to generate short summaries
-    4. Emit a joined live table ready to be written to OUTPUT_FILE
+       in streaming mode.
+    2. Optionally do light transformations.
+    3. Emit a live table that Streamlit can read.
     """
 
-    # 1) Streaming read of Aparavi JSON
+    # 1) Streaming read from directory
     docs = pw.io.fs.read(
         path=str(APARAVI_RESULTS_DIR),
         format="json",
@@ -121,7 +115,7 @@ def build_pipeline() -> pw.Table:
         object_pattern="*.json",
     )
 
-    # 2) Basic selection (you can add more fields if your schema has them)
+    # 2) For now, we just pass through fields as-is.
     events = docs.select(
         patient_id=pw.this.patient_id,
         doc_id=pw.this.doc_id,
@@ -130,110 +124,10 @@ def build_pipeline() -> pw.Table:
         area_cm2=pw.this.area_cm2,
         infection_risk_flag=pw.this.infection_risk_flag,
         timestamp=pw.this.timestamp,
-        text_summary=pw.this.text_summary,
+        summary=pw.this.text_summary,  # used by the Streamlit "Pathway Stream" tab
     )
 
-    # 3) Prepare text for LLM (chunk if needed)
-    splitter = TokenCountSplitter(
-        min_tokens=80,
-        max_tokens=256,
-        encoding="cl100k_base",
-    )
-
-    chunked = events.select(
-        patient_id=pw.this.patient_id,
-        doc_id=pw.this.doc_id,
-        wound_stage=pw.this.wound_stage,
-        redness_score=pw.this.redness_score,
-        area_cm2=pw.this.area_cm2,
-        infection_risk_flag=pw.this.infection_risk_flag,
-        timestamp=pw.this.timestamp,
-        chunks=splitter(pw.this.text_summary),
-    ).flatten(pw.this.chunks)
-
-    chunked = chunked.select(
-        patient_id=pw.this.patient_id,
-        doc_id=pw.this.doc_id,
-        wound_stage=pw.this.wound_stage,
-        redness_score=pw.this.redness_score,
-        area_cm2=pw.this.area_cm2,
-        infection_risk_flag=pw.this.infection_risk_flag,
-        timestamp=pw.this.timestamp,
-        chunk_text=pw.this.chunks[0],
-    )
-
-    # 4) LLM model (OpenAI; requires OPENAI_API_KEY)
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-
-    if not openai_api_key:
-        print(
-            "[Pathway] WARNING: OPENAI_API_KEY not set. "
-            "Summaries will fall back to echoing truncated text."
-        )
-
-    if openai_api_key:
-        model = OpenAIChat(
-            model="gpt-4o-mini",
-            api_key=openai_api_key,
-        )
-    else:
-        model = None
-
-    @pw.udf
-    def build_prompt(chunk_text: str, wound_stage: str) -> str:
-        return (
-            "You are an AI clinical assistant summarizing wound-healing status for a "
-            "clinician and patient. Using the following machine-extracted notes, write "
-            "a concise 2–3 sentence summary that covers: healing progression, "
-            "inflammation/redness, infection risk, and any suggested follow-up. "
-            "Avoid giving direct medical advice; use educational language.\n\n"
-            f"WOUND STAGE: {wound_stage}\n"
-            f"NOTES:\n{chunk_text}"
-        )
-
-    if model is not None:
-        summarized_chunks = chunked.select(
-            patient_id=pw.this.patient_id,
-            doc_id=pw.this.doc_id,
-            wound_stage=pw.this.wound_stage,
-            redness_score=pw.this.redness_score,
-            area_cm2=pw.this.area_cm2,
-            infection_risk_flag=pw.this.infection_risk_flag,
-            timestamp=pw.this.timestamp,
-            llm_output=model(build_prompt(pw.this.chunk_text, pw.this.wound_stage)),
-        )
-    else:
-        # Fallback: no LLM; just truncate chunk_text as a pseudo-summary
-        @pw.udf
-        def truncate_text(text: str) -> str:
-            return (text[:400] + "…") if len(text) > 400 else text
-
-        summarized_chunks = chunked.select(
-            patient_id=pw.this.patient_id,
-            doc_id=pw.this.doc_id,
-            wound_stage=pw.this.wound_stage,
-            redness_score=pw.this.redness_score,
-            area_cm2=pw.this.area_cm2,
-            infection_risk_flag=pw.this.infection_risk_flag,
-            timestamp=pw.this.timestamp,
-            llm_output=truncate_text(pw.this.chunk_text),
-        )
-
-    # 5) Aggregate multiple chunks per document into a single summary
-    summarized = summarized_chunks.groupby(
-        pw.this.patient_id, pw.this.doc_id
-    ).reduce(
-        patient_id=pw.this.patient_id,
-        doc_id=pw.this.doc_id,
-        wound_stage=pw.this.wound_stage,
-        redness_score=pw.this.redness_score,
-        area_cm2=pw.this.area_cm2,
-        infection_risk_flag=pw.this.infection_risk_flag,
-        timestamp=pw.this.timestamp,
-        summary=pw.reducers.concat(pw.this.llm_output, separator="\n"),
-    )
-
-    return summarized
+    return events
 
 
 def run_pipeline() -> None:
