@@ -1,30 +1,49 @@
 import os
+import json
+import shutil
+from glob import glob
 from pathlib import Path
-from typing import List, Optional
+from datetime import datetime
+from typing import Optional, List
 
 from dotenv import load_dotenv
-from aparavi_dtc_sdk import AparaviClient  # from official SDK
-# https://aparavi.com/documentation-aparavi/data-toolchain-for-ai-documentation/python-sdk/python-sdk-quickstart/ :contentReference[oaicite:3]{index=3}
 
 load_dotenv()
+
+# -------------------------------------------------------------------
+# Optional Aparavi SDK import
+# -------------------------------------------------------------------
+
+try:
+    # If you have the official Aparavi SDK installed locally,
+    # this import will succeed. Otherwise we fall back to demo mode.
+    from aparavi_dtc_sdk import AparaviClient  # type: ignore
+except Exception:
+    AparaviClient = None
 
 APARAVI_BASE_URL = os.getenv("APARAVI_BASE_URL")
 APARAVI_API_KEY = os.getenv("APARAVI_API_KEY")
 
-# Directory where Aparavi-safe files will be written (e.g., redacted JSON, text, etc.)
-PROCESSED_DATA_DIR = Path(os.getenv("PROCESSED_DATA_DIR", "data/processed"))
+BASE_DATA_DIR = Path("data")
+PROCESSED_DATA_DIR = Path(os.getenv("PROCESSED_DATA_DIR", BASE_DATA_DIR / "processed"))
 PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+APARAVI_RESULTS_DIR = PROCESSED_DATA_DIR / "aparavi_results"
+APARAVI_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-def _get_client() -> Optional[AparaviClient]:
-    """Return an AparaviClient if creds are set, else None (for offline/demo mode)."""
+
+def _get_client() -> Optional["AparaviClient"]:
+    """Return an AparaviClient if SDK and creds are available, else None."""
+    if AparaviClient is None:
+        return None
     if not APARAVI_BASE_URL or not APARAVI_API_KEY:
         return None
+    return AparaviClient(base_url=APARAVI_BASE_URL, api_key=APARAVI_API_KEY)
 
-    return AparaviClient(
-        base_url=APARAVI_BASE_URL,
-        api_key=APARAVI_API_KEY,
-    )
+
+# -------------------------------------------------------------------
+# Public API used by Streamlit app
+# -------------------------------------------------------------------
 
 
 def run_aparavi_pipeline_on_wound_files(
@@ -33,56 +52,91 @@ def run_aparavi_pipeline_on_wound_files(
     output_subdir: str = "aparavi_results",
 ) -> Path:
     """
-    Send wound-related files to Aparavi for PII/PHI detection, redaction, and enrichment.
+    Send wound-related files to Aparavi for PHI/PII detection & enrichment.
 
-    - file_glob: glob pattern for images/docs you want to send (e.g., 'data/sample_wounds/*.jpg')
-    - pipeline_config: either a JSON pipeline config file or a Predefined pipeline name.
-    - Returns: directory where Aparavi wrote results (you'll read them from Pathway).
+    In demo/offline mode (no SDK or API key), we simply COPY the files into
+    data/processed/aparavi_results so that Pathway still sees "new data" and
+    updates the stream.
     """
-    client = _get_client()
     out_dir = PROCESSED_DATA_DIR / output_subdir
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    client = _get_client()
     if client is None:
-        # Fallback for when you don't have Aparavi credentials yet.
-        # We'll just mirror the input files into out_dir.
-        from glob import glob
-        import shutil
-
+        # Demo / offline mode: mirror input files so Pathway can react
         for f in glob(file_glob):
             src = Path(f)
             dst = out_dir / src.name
             shutil.copy2(src, dst)
 
         print(
-            "[Aparavi] No credentials set – running in NOOP mode. "
-            f"Copied raw files into {out_dir}"
+            "[Aparavi] SDK not available or credentials missing – running in "
+            f"LOCAL DEMO MODE. Copied files into: {out_dir}"
         )
         return out_dir
 
-    # For hackathon: use execute_pipeline_workflow with your pipeline config.
-    # Docs: execute_pipeline_workflow(pipeline='pipeline.json', file_glob='./*.png') :contentReference[oaicite:4]{index=4}
+    # Real Aparavi call (for when SDK & creds are available)
     result = client.execute_pipeline_workflow(
-        pipeline=pipeline_config,  # can also be a PredefinedPipeline enum
+        pipeline=pipeline_config,
         file_glob=file_glob,
     )
-
-    # The exact shape of `result` depends on your pipeline. Typical patterns:
-    # - A URL to a result object
-    # - A local path where files were written (if you mounted volumes)
-    # For safety, we just log it and rely on your pipeline to write into `out_dir`.
     print("[Aparavi] Pipeline result:", result)
-    print("[Aparavi] Ensure your Aparavi pipeline writes outputs into", out_dir)
-
+    print("[Aparavi] Ensure pipeline writes structured JSON into", out_dir)
     return out_dir
 
 
+def write_local_event_for_pathway(
+    patient_id: str,
+    metrics: dict,
+    analysis: dict,
+    doc_id: Optional[str] = None,
+    output_dir: Path = APARAVI_RESULTS_DIR,
+) -> Path:
+    """
+    Create an 'Aparavi-shaped' JSON event from the CV metrics + LLM analysis
+    and write it into data/processed/aparavi_results for Pathway to pick up.
+
+    This simulates the output of an Aparavi enrichment pipeline so the full
+    chain works even when we are offline or in demo mode.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if doc_id is None:
+        doc_id = f"{patient_id}_{datetime.utcnow().isoformat().replace(':', '-')}"
+    now_ts = datetime.utcnow().isoformat()
+
+    trend = analysis.get("trend", "stable")
+    risk = analysis.get("risk_level", "medium")
+
+    if risk == "high":
+        wound_stage = "critical"
+    elif risk == "medium":
+        wound_stage = "intermediate"
+    else:
+        wound_stage = "improving"
+
+    event = {
+        "patient_id": patient_id,
+        "doc_id": doc_id,
+        "wound_stage": wound_stage,
+        "redness_score": float(metrics["redness"]),
+        "area_cm2": float(metrics["area"]),
+        "infection_risk_flag": bool(risk == "high"),
+        "timestamp": now_ts,
+        "text_summary": analysis["summary"],
+    }
+
+    out_path = output_dir / f"{doc_id}.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(event, f, ensure_ascii=False, indent=2)
+
+    print(f"[Aparavi-local] Wrote event for Pathway: {out_path}")
+    return out_path
+
+
 def get_aparavi_enriched_docs(
-    aparavi_output_dir: Path,
+    aparavi_output_dir: Path = APARAVI_RESULTS_DIR,
     pattern: str = "*.json",
 ) -> List[Path]:
-    """
-    Helper to list Aparavi-enriched artifacts (e.g. JSON with redacted text & metadata)
-    that Pathway will ingest as part of the live index.
-    """
+    """Helper to list Aparavi-like JSON artifacts (for debugging / inspection)."""
     return sorted(aparavi_output_dir.glob(pattern))
