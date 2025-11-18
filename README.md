@@ -82,8 +82,7 @@ Post-surgical wound care is a critical yet challenging aspect of patient recover
 ## 🎬 See It In Action
 
 <div align="center">
-
-![App Showcase](https://drive.google.com/file/d/1CyRucHXiaIFMEzlKtxuU_YBdX6hz7vTU/view?usp=drive_link)
+<img width="1354" height="764" alt="image" src="https://github.com/user-attachments/assets/af46ed07-2f1f-4253-8142-d441c0984baf" />
 
 *Complete workflow from image upload to AI-powered analysis and real-time streaming*
 
