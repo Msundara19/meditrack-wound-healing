@@ -11,6 +11,12 @@ from meditrack.llm.ai_client import (
     generate_ai_summary_gemini,
 )
 
+# Try to import Pathway publisher (safe even if not installed)
+try:
+    from meditrack.pipeline.pathway_pipeline import publish_wound_event
+except Exception:
+    publish_wound_event = None
+
 import streamlit as st
 import cv2
 import numpy as np
@@ -150,14 +156,14 @@ def render_sidebar():
         aparavi = st.checkbox(
             "Aparavi PHI Protection",
             value=st.session_state.aparavi_enabled,
-            help="Automatically detect and redact PHI/PII from images",
+            help="Automatically detect and redact PHI/PII from LLM prompts",
         )
         st.session_state.aparavi_enabled = aparavi
 
         pathway = st.checkbox(
             "Pathway Streaming",
             value=st.session_state.pathway_streaming,
-            help="Enable real-time streaming analysis",
+            help="Enable real-time streaming event publishing",
         )
         st.session_state.pathway_streaming = pathway
 
@@ -184,14 +190,17 @@ def render_sidebar():
             st.metric("LLM Engine", "🟢 Ready")
 
         if pathway:
-            st.success("⚡ Streaming ACTIVE")
+            if publish_wound_event is not None:
+                st.success("⚡ Streaming ACTIVE (events will be published)")
+            else:
+                st.warning("⚠️ Pathway not fully configured (no publisher)")
         else:
             st.info("⏸️ Batch Mode")
 
         if aparavi:
-            st.success("🔒 PHI Protected")
+            st.success("🔒 PHI Protection ENABLED (prompts filtered)")
         else:
-            st.warning("⚠️ No PHI Scan")
+            st.warning("⚠️ PHI Protection OFF (raw prompts to LLM)")
 
         st.divider()
         st.subheader("🏆 Hack With Chicago 2.0")
@@ -251,7 +260,7 @@ def upload_and_process_image():
 
         if st.session_state.aparavi_enabled:
             with col2:
-                st.subheader("🔒 PHI Detection")
+                st.subheader("🔒 PHI Detection (simulated)")
                 with st.spinner("Scanning for PHI..."):
                     phi_detections = simulate_phi_detection(img_array)
                     if phi_detections > 0:
@@ -261,11 +270,15 @@ def upload_and_process_image():
                         redacted_img = apply_redaction(img_array)
                         st.image(redacted_img, use_container_width=True)
                     else:
-                        st.success("✅ No PHI detected")
+                        st.success("✅ No PHI detected (simulated)")
                         st.image(image, use_container_width=True, caption="Clean Image")
+        else:
+            with col2:
+                st.subheader("🔒 PHI Detection")
+                st.info("PHI protection disabled in settings.")
 
         with col3:
-            st.subheader("🔬 Wound Segmentation")
+            st.subheader("🔬 Wound Segmentation (simulated)")
             with st.spinner("Processing..."):
                 segmented = simulate_segmentation(img_array)
                 st.image(segmented, use_container_width=True)
@@ -335,6 +348,21 @@ def process_wound_analysis(image: np.ndarray):
     display_ai_analysis(analysis)
     save_to_history(metrics, analysis)
 
+    # ---- Pathway streaming hook ----
+    if st.session_state.get("pathway_streaming", False):
+        if publish_wound_event is not None:
+            try:
+                publish_wound_event(
+                    patient_id=st.session_state.patient_id,
+                    metrics=metrics,
+                    risk_level=analysis["risk_level"],
+                )
+                st.info("📡 Wound event published to Pathway stream (simulated).")
+            except Exception as e:
+                st.warning(f"Pathway streaming failed: {e}")
+        else:
+            st.warning("Pathway streaming enabled, but no publisher is configured.")
+
 
 def generate_llm_analysis(
     metrics: dict,
@@ -343,29 +371,37 @@ def generate_llm_analysis(
 ) -> dict:
     """
     Combine simple heuristic risk logic with Groq/Gemini LLM explanation.
+    Explicitly handles the case where no clear wound is visible.
     """
 
     area_change = metrics["area_change"]
     redness = metrics["redness"]
     granulation = metrics["granulation"]
+    area = metrics["area"]
+    area_fraction = metrics.get("area_fraction", area / 12.0)
 
     # ---- Heuristic risk buckets ----
-    if area_change < -10 and redness < 45 and granulation > 60:
+    # Case 1: No obvious wound (very small or whole-image area AND low redness)
+    if ((area_fraction < 0.12) or (area_fraction > 0.8)) and redness < 35:
         risk_level = "low"
-    elif area_change > 10 or redness > 65:
+        area_trend = "no clear wound area detected"
+    # Case 2: clearly improving, good granulation, low redness
+    elif area_change < -10 and redness < 45 and granulation > 60:
+        risk_level = "low"
+        area_trend = "improving rapidly"
+    # Case 3: worsening or very inflamed
+    elif area_change > 15 or (redness > 70 and area_fraction > 0.15):
         risk_level = "high"
+        area_trend = "worsening"
     else:
         risk_level = "medium"
-
-    area_trend = (
-        "improving rapidly"
-        if area_change < -10
-        else "improving"
-        if area_change < 0
-        else "stable"
-        if abs(area_change) <= 5
-        else "worsening"
-    )
+        area_trend = (
+            "improving"
+            if area_change < 0
+            else "stable"
+            if abs(area_change) <= 5
+            else "worsening slightly"
+        )
 
     base_summary = (
         f"The wound shows {area_trend} progress with a "
@@ -375,11 +411,10 @@ def generate_llm_analysis(
     )
 
     recommendations = [
-        "Continue current wound care regimen"
-        if risk_level == "low"
-        else "Monitor closely for infection signs",
-        "Keep wound clean and dry",
-        "Take progress photos daily",
+        "Continue normal skin care and hygiene." if risk_level == "low"
+        else "Monitor closely for infection signs and follow local wound care advice.",
+        "Keep the area clean and dry.",
+        "Take progress photos if you notice any new changes.",
         "Seek prompt clinical review if pain, discharge, or fever occur.",
     ]
 
@@ -398,6 +433,7 @@ def generate_llm_analysis(
                 "granulation_pct": metrics["granulation"],
                 "edge_quality": metrics["edge_quality"],
                 "healing_score": metrics["healing_score"],
+                "area_fraction": metrics.get("area_fraction"),
             }
             trend_notes = (
                 f"Wound area changed by {metrics['area_change']:.1f}% compared to the "
@@ -405,17 +441,21 @@ def generate_llm_analysis(
                 f"granulation is {metrics['granulation']:.1f}%."
             )
 
+            use_aparavi_phi = st.session_state.get("aparavi_enabled", False)
+
             if provider == "Groq":
                 summary_md, llm_risk = generate_ai_summary_groq(
                     patient_id=patient_id,
                     latest_metrics=latest_metrics,
                     trend_notes=trend_notes,
+                    use_aparavi=use_aparavi_phi,
                 )
             else:
                 summary_md, llm_risk = generate_ai_summary_gemini(
                     patient_id=patient_id,
                     latest_metrics=latest_metrics,
                     trend_notes=trend_notes,
+                    use_aparavi=use_aparavi_phi,
                 )
 
             if summary_md:
@@ -583,7 +623,7 @@ def apply_redaction(image: np.ndarray) -> np.ndarray:
 
 def simulate_segmentation(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    _, mask = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY)
+    _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     overlay = image.copy()
     overlay[mask == 0] = overlay[mask == 0] * 0.5 + np.array([255, 0, 0]) * 0.5
     return overlay.astype(np.uint8)
@@ -623,8 +663,8 @@ def extract_wound_metrics(image: np.ndarray) -> dict:
         wound_area_px = wound_pixels.sum()
 
     # Area as % of image, mapped to ~0–12 cm² range
-    area_fraction = wound_area_px / float(h * w)
-    base_area = area_fraction * 12.0  # arbitrary scaling for demo
+    area_fraction = wound_area_px / float(h * w)          # 0–1
+    base_area = area_fraction * 12.0                      # arbitrary scaling for demo
 
     # --- Area change compared to previous measurement ---
     if st.session_state.wound_history:
@@ -666,6 +706,7 @@ def extract_wound_metrics(image: np.ndarray) -> dict:
     return {
         "area": float(base_area),
         "area_change": float(area_change),
+        "area_fraction": float(area_fraction),
         "perimeter": float(base_area * 2.5),
         "aspect_ratio": 1.2,
         "redness": float(redness),
