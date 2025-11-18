@@ -96,7 +96,7 @@ and then the risk level in ALL CAPS. Example: RISK_LEVEL: MEDIUM
 """
 
     response = client.chat.completions.create(
-        model="llama-3.1-70b-versatile",  # or llama-3.1-8b-instant for cheaper/faster
+        model="llama-3.1-8b-instant",  # or llama-3.1-8b-instant for cheaper/faster
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
