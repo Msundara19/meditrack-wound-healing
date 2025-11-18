@@ -34,8 +34,6 @@ Post-surgical wound care is a critical yet challenging aspect of patient recover
 
 ## ✨ Key Features
 
-![Features Showcase](docs/images/features_showcase.png)
-
 <table>
 <tr>
 <td width="50%">
