@@ -3,7 +3,20 @@ MediTrack - Enhanced Streamlit Dashboard
 Real-time wound monitoring with Pathway streaming and Aparavi PHI protection
 """
 
+import json
+from datetime import datetime
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from PIL import Image
+
+from aparavi_integration import run_aparavi_pipeline_on_wound_files
 from load_env import load_environment
+
 load_environment()
 
 from meditrack.llm.ai_client import (
@@ -17,23 +30,29 @@ try:
 except Exception:
     publish_wound_event = None
 
-import streamlit as st
-import cv2
-import numpy as np
-import plotly.graph_objects as go
-from datetime import datetime
-import pandas as pd
-from PIL import Image
+# -------------------------------------------------------------------
+# Paths and constants
+# -------------------------------------------------------------------
 
-# Page config
+DATA_DIR = Path("data")
+SAMPLE_WOUNDS_DIR = DATA_DIR / "sample_wounds"
+PATHWAY_OUTPUT_DIR = DATA_DIR / "outputs"
+PATHWAY_OUTPUT_FILE = PATHWAY_OUTPUT_DIR / "wound_events.jsonl"
+
+SAMPLE_WOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+PATHWAY_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# -------------------------------------------------------------------
+# Page config & global styles
+# -------------------------------------------------------------------
+
 st.set_page_config(
     page_title="MediTrack - Wound Healing Monitor",
     page_icon="🏥",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# Custom CSS
 st.markdown(
     """
 <style>
@@ -88,6 +107,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# -------------------------------------------------------------------
+# Session state
+# -------------------------------------------------------------------
+
 
 def initialize_session_state():
     if "patient_id" not in st.session_state:
@@ -99,9 +122,14 @@ def initialize_session_state():
     if "pathway_streaming" not in st.session_state:
         st.session_state.pathway_streaming = False
     if "ai_provider" not in st.session_state:
-        st.session_state.ai_provider = "Groq"      # DEFAULT
+        st.session_state.ai_provider = "Groq"  # DEFAULT
     if "ai_live" not in st.session_state:
         st.session_state.ai_live = True
+
+
+# -------------------------------------------------------------------
+# Layout components
+# -------------------------------------------------------------------
 
 
 def render_header():
@@ -226,6 +254,11 @@ def render_sidebar():
             )
 
 
+# -------------------------------------------------------------------
+# Image upload + Aparavi + CV simulation
+# -------------------------------------------------------------------
+
+
 def upload_and_process_image():
     st.header("📸 Upload Wound Image")
     col1, col2 = st.columns([2, 1])
@@ -249,7 +282,13 @@ def upload_and_process_image():
         )
 
     if uploaded_file is not None:
-        image = Image.open(uploaded_file)
+        # Save uploaded image to disk for Aparavi / Pathway pipelines
+        SAMPLE_WOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+        img_save_path = SAMPLE_WOUNDS_DIR / uploaded_file.name
+        with open(img_save_path, "wb") as f:
+            f.write(uploaded_file.read())
+
+        image = Image.open(img_save_path)
         img_array = np.array(image)
 
         col1, col2, col3 = st.columns(3)
@@ -258,6 +297,7 @@ def upload_and_process_image():
             st.subheader("📷 Original Image")
             st.image(image, use_container_width=True)
 
+        # Aparavi PHI (simulated visually) + real Aparavi pipeline hook
         if st.session_state.aparavi_enabled:
             with col2:
                 st.subheader("🔒 PHI Detection (simulated)")
@@ -272,6 +312,22 @@ def upload_and_process_image():
                     else:
                         st.success("✅ No PHI detected (simulated)")
                         st.image(image, use_container_width=True, caption="Clean Image")
+
+                st.markdown("---")
+                st.subheader("🧠 Aparavi Pipeline (real)")
+                st.caption(
+                    "Runs Aparavi DTC pipeline on the saved wound image(s). "
+                    "Configure your pipeline in Aparavi to write enriched JSON into "
+                    "`data/processed/aparavi_results/` for Pathway."
+                )
+                if st.button("Run Aparavi PHI/Enrichment Pipeline"):
+                    with st.spinner("Sending file(s) to Aparavi..."):
+                        out_dir = run_aparavi_pipeline_on_wound_files(
+                            file_glob=str(SAMPLE_WOUNDS_DIR / "*.jpg"),
+                            pipeline_config="aparavi_pipeline_config.json",
+                        )
+                    st.success("Aparavi pipeline executed.")
+                    st.info(f"Outputs expected under: `{out_dir}`")
         else:
             with col2:
                 st.subheader("🔒 PHI Detection")
@@ -305,6 +361,11 @@ def upload_and_process_image():
         if st.button("🚀 Analyze Wound", type="primary", use_container_width=True):
             with st.spinner("Running AI analysis..."):
                 process_wound_analysis(img_array)
+
+
+# -------------------------------------------------------------------
+# Wound analysis + AI + Pathway streaming hook
+# -------------------------------------------------------------------
 
 
 def process_wound_analysis(image: np.ndarray):
@@ -365,9 +426,7 @@ def process_wound_analysis(image: np.ndarray):
 
 
 def generate_llm_analysis(
-    metrics: dict,
-    provider: str = "Groq",
-    use_live: bool = True
+    metrics: dict, provider: str = "Groq", use_live: bool = True
 ) -> dict:
     """
     Combine simple heuristic risk logic with Groq/Gemini LLM explanation.
@@ -411,7 +470,8 @@ def generate_llm_analysis(
     )
 
     recommendations = [
-        "Continue normal skin care and hygiene." if risk_level == "low"
+        "Continue normal skin care and hygiene."
+        if risk_level == "low"
         else "Monitor closely for infection signs and follow local wound care advice.",
         "Keep the area clean and dry.",
         "Take progress photos if you notice any new changes.",
@@ -514,6 +574,11 @@ def display_ai_analysis(analysis: dict):
         st.info(f"📈 Trend: {analysis['trend'].title()}")
 
 
+# -------------------------------------------------------------------
+# Historical trends & metrics
+# -------------------------------------------------------------------
+
+
 def render_historical_trends():
     st.header("📈 Healing Progress Timeline")
     if len(st.session_state.wound_history) < 2:
@@ -606,7 +671,74 @@ def render_metrics_dashboard():
         st.write(f"**Overall Score:** {latest['healing_score']:.0f}/100")
 
 
-# ---- Helper functions (simulated CV & PHI) ----
+# -------------------------------------------------------------------
+# Pathway live stream view (reads JSONL produced by pathway_pipeline.py)
+# -------------------------------------------------------------------
+
+
+def render_pathway_live_view():
+    st.header("📡 Pathway Live Wound Events")
+
+    st.caption(
+        "This view reads `data/outputs/wound_events.jsonl` generated by the "
+        "Pathway pipeline. Make sure `python pathway_pipeline.py` is running."
+    )
+
+    if not PATHWAY_OUTPUT_FILE.exists():
+        st.warning(
+            "No Pathway output file found yet. "
+            "Start the Pathway pipeline and/or run Aparavi enrichment."
+        )
+        return
+
+    rows = []
+    with open(PATHWAY_OUTPUT_FILE, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if not rows:
+        st.info("Pathway output file is currently empty.")
+        return
+
+    rows = rows[-20:]  # last 20 events
+    for row in reversed(rows):
+        patient = row.get("patient_id", "UNKNOWN")
+        doc_id = row.get("doc_id", "N/A")
+        wound_stage = row.get("wound_stage", "N/A")
+        area = row.get("area_cm2", "N/A")
+        redness = row.get("redness_score", "N/A")
+        risk_flag = row.get("infection_risk_flag", False)
+        ts = row.get("timestamp", "N/A")
+        summary = row.get("summary", "")
+
+        risk_badge = "⚠️ Infection Risk" if risk_flag else "✅ Low Infection Risk"
+
+        st.markdown(
+            f"""
+**Patient:** `{patient}` | **Doc ID:** `{doc_id}`  
+**Time:** `{ts}`  
+**Wound Stage:** `{wound_stage}`  
+**Area:** `{area}` cm² | **Redness Score:** `{redness}`  
+**Risk:** {risk_badge}  
+
+**Summary:**  
+{summary}
+
+---
+"""
+        )
+
+
+# -------------------------------------------------------------------
+# Helper functions (simulated CV & PHI)
+# -------------------------------------------------------------------
+
 
 def simulate_phi_detection(image: np.ndarray) -> int:
     return int(np.random.choice([0, 0, 0, 1, 2]))
@@ -615,8 +747,8 @@ def simulate_phi_detection(image: np.ndarray) -> int:
 def apply_redaction(image: np.ndarray) -> np.ndarray:
     img = image.copy()
     h, w = img.shape[:2]
-    img[0:int(h * 0.1), :] = cv2.GaussianBlur(
-        img[0:int(h * 0.1), :], (51, 51), 30
+    img[0 : int(h * 0.1), :] = cv2.GaussianBlur(
+        img[0 : int(h * 0.1), :], (51, 51), 30
     )
     return img
 
@@ -663,8 +795,8 @@ def extract_wound_metrics(image: np.ndarray) -> dict:
         wound_area_px = wound_pixels.sum()
 
     # Area as % of image, mapped to ~0–12 cm² range
-    area_fraction = wound_area_px / float(h * w)          # 0–1
-    base_area = area_fraction * 12.0                      # arbitrary scaling for demo
+    area_fraction = wound_area_px / float(h * w)  # 0–1
+    base_area = area_fraction * 12.0  # arbitrary scaling for demo
 
     # --- Area change compared to previous measurement ---
     if st.session_state.wound_history:
@@ -737,13 +869,18 @@ def save_to_history(metrics: dict, analysis: dict):
         st.session_state.wound_history = st.session_state.wound_history[-30:]
 
 
+# -------------------------------------------------------------------
+# Main
+# -------------------------------------------------------------------
+
+
 def main():
     initialize_session_state()
     render_sidebar()
     render_header()
 
-    tab1, tab2, tab3 = st.tabs(
-        ["📸 New Analysis", "📈 Progress Tracking", "📊 Metrics"]
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["📸 New Analysis", "📈 Progress Tracking", "📊 Metrics", "📡 Pathway Stream"]
     )
     with tab1:
         upload_and_process_image()
@@ -751,6 +888,8 @@ def main():
         render_historical_trends()
     with tab3:
         render_metrics_dashboard()
+    with tab4:
+        render_pathway_live_view()
 
     st.divider()
     st.markdown(
