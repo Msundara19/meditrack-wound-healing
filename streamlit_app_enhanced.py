@@ -336,15 +336,42 @@ def process_wound_analysis(image: np.ndarray):
     save_to_history(metrics, analysis)
 
 
-def generate_llm_analysis(metrics: dict, provider: str = "Groq", use_live: bool = True) -> dict:
-    area_trend = "improving" if metrics["area_change"] < 0 else "concerning"
-    risk_level = "low" if metrics["area_change"] < 0 and metrics["redness"] < 50 else "medium"
+def generate_llm_analysis(
+    metrics: dict,
+    provider: str = "Groq",
+    use_live: bool = True
+) -> dict:
+    """
+    Combine simple heuristic risk logic with Groq/Gemini LLM explanation.
+    """
+
+    area_change = metrics["area_change"]
+    redness = metrics["redness"]
+    granulation = metrics["granulation"]
+
+    # ---- Heuristic risk buckets ----
+    if area_change < -10 and redness < 45 and granulation > 60:
+        risk_level = "low"
+    elif area_change > 10 or redness > 65:
+        risk_level = "high"
+    else:
+        risk_level = "medium"
+
+    area_trend = (
+        "improving rapidly"
+        if area_change < -10
+        else "improving"
+        if area_change < 0
+        else "stable"
+        if abs(area_change) <= 5
+        else "worsening"
+    )
 
     base_summary = (
         f"The wound shows {area_trend} progress with a "
-        f"{abs(metrics['area_change']):.1f}% change in area. "
-        f"Granulation tissue is at {metrics['granulation']:.0f}%, "
-        f"indicating active healing. {metrics['redness_context']}"
+        f"{abs(area_change):.1f}% change in area. "
+        f"Granulation tissue is at {granulation:.0f}%, "
+        f"and redness is {redness:.0f}%. {metrics['redness_context']}"
     )
 
     recommendations = [
@@ -353,15 +380,14 @@ def generate_llm_analysis(metrics: dict, provider: str = "Groq", use_live: bool 
         else "Monitor closely for infection signs",
         "Keep wound clean and dry",
         "Take progress photos daily",
-        "Follow up with healthcare provider in 3-5 days"
-        if risk_level == "medium"
-        else "Next routine check-up as scheduled",
+        "Seek prompt clinical review if pain, discharge, or fever occur.",
     ]
 
     consult_doctor = risk_level != "low"
     trend = area_trend
     summary_text = base_summary
 
+    # ---- Live LLM call (Groq or Gemini) ----
     if use_live:
         try:
             patient_id = st.session_state.get("patient_id", "DEMO-001")
@@ -564,32 +590,97 @@ def simulate_segmentation(image: np.ndarray) -> np.ndarray:
 
 
 def extract_wound_metrics(image: np.ndarray) -> dict:
-    base_area = 4.5 + np.random.uniform(-0.5, 0.5)
+    """
+    Extract wound metrics from the image.
+
+    This is a lightweight, demo-friendly version that:
+    - Estimates wound area from a simple threshold mask
+    - Estimates redness from red-vs-green in the wound region
+    - Varies granulation etc. based on texture / brightness
+
+    It is NOT medically accurate, but it makes the AI output
+    react meaningfully to different images.
+    """
+    # Ensure RGB uint8
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+    elif image.shape[2] == 4:
+        image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+
+    h, w = image.shape[:2]
+
+    # --- Rough wound mask: darker region assumed to be wound  ---
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    _, mask = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+    wound_pixels = mask > 0
+    wound_area_px = int(wound_pixels.sum())
+
+    # If mask failed, fall back to "whole image"
+    if wound_area_px == 0:
+        wound_pixels = np.ones_like(gray, dtype=bool)
+        wound_area_px = wound_pixels.sum()
+
+    # Area as % of image, mapped to ~0–12 cm² range
+    area_fraction = wound_area_px / float(h * w)
+    base_area = area_fraction * 12.0  # arbitrary scaling for demo
+
+    # --- Area change compared to previous measurement ---
     if st.session_state.wound_history:
         prev_area = st.session_state.wound_history[-1]["area"]
         area_change = ((base_area - prev_area) / prev_area) * 100
     else:
-        area_change = 0
+        area_change = 0.0
 
-    redness = 45 + np.random.uniform(-10, 10)
-    granulation = 65 + np.random.uniform(-5, 5)
+    # --- Redness: red channel vs green inside wound mask ---
+    img_float = image.astype(np.float32)
+    red = img_float[:, :, 0]
+    green = img_float[:, :, 1]
+
+    red_wound = red[wound_pixels]
+    green_wound = green[wound_pixels]
+
+    red_diff = np.clip(red_wound.mean() - green_wound.mean(), -80, 80)
+    redness = np.interp(red_diff, [-80, 80], [20, 90])  # 20–90%
+
+    # --- Granulation: use brightness + a bit of noise ---
+    brightness = gray[wound_pixels].mean()
+    granulation = np.interp(brightness, [40, 200], [40, 85])  # %
+    granulation += np.random.uniform(-5, 5)
+    granulation = float(np.clip(granulation, 0, 100))
+
+    # --- Edge quality: how "sharp" boundary is (roughly) ---
+    edges = cv2.Canny(gray, 50, 150)
+    edge_density = edges[wound_pixels].mean() / 255.0
+    edge_quality = float(np.clip(0.4 + edge_density, 0.0, 1.0))
+
+    # --- Healing score: simple composite metric ---
+    area_score = np.clip(100 - area_fraction * 200, 0, 100)
+    redness_score = np.clip(100 - redness, 0, 100)
+    gran_score = granulation
+    healing_score = float(
+        0.4 * gran_score + 0.3 * area_score + 0.3 * redness_score
+    )
 
     return {
-        "area": base_area,
-        "area_change": area_change,
-        "perimeter": base_area * 2.5,
+        "area": float(base_area),
+        "area_change": float(area_change),
+        "perimeter": float(base_area * 2.5),
         "aspect_ratio": 1.2,
-        "redness": redness,
+        "redness": float(redness),
         "redness_change": -3 if area_change < 0 else 2,
-        "redness_context": "Redness is within normal healing range."
-        if redness < 50
-        else "Elevated redness detected - monitor for infection.",
+        "redness_context": (
+            "Redness is within normal healing range."
+            if redness < 50
+            else "Elevated redness detected - monitor for infection."
+        ),
         "granulation": granulation,
         "granulation_change": 5,
         "epithelialization": 20,
         "necrotic": 5,
-        "edge_quality": 0.78,
-        "healing_score": 75,
+        "edge_quality": edge_quality,
+        "healing_score": healing_score,
     }
 
 
