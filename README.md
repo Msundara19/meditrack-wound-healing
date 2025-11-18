@@ -9,11 +9,9 @@
 
 **AI-Powered Post-Surgical Care | Real-Time Wound Analysis | Privacy-First Healthcare**
 
-[🚀 Live Demo](#-quick-start) • [📖 Documentation](#-documentation) • [🎯 Features](#-key-features) • [🏗️ Architecture](#️-architecture)
+[🚀 Live Demo](https://drive.google.com/file/d/1iTxzD--Oofe8pk82E9WOgMAi6oYAU71m/view?usp=drive_link)  • [🎯 Features](#-key-features) • [🏗️ Architecture](#️-architecture)
 
 ---
-
-![MediTrack Banner](docs/images/banner.png)
 
 </div>
 
