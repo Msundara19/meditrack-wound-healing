@@ -2,6 +2,8 @@
 MediTrack - Enhanced Streamlit Dashboard
 Real-time wound monitoring with Pathway streaming and Aparavi PHI protection
 """
+from load_env import load_environment
+load_environment()
 
 import streamlit as st
 import cv2
