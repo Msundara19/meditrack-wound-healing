@@ -83,7 +83,7 @@ Post-surgical wound care is a critical yet challenging aspect of patient recover
 
 <div align="center">
 
-![App Showcase](docs/images/app_showcase.png)
+![App Showcase](https://drive.google.com/file/d/1CyRucHXiaIFMEzlKtxuU_YBdX6hz7vTU/view?usp=drive_link)
 
 *Complete workflow from image upload to AI-powered analysis and real-time streaming*
 
@@ -105,8 +105,6 @@ Post-surgical wound care is a critical yet challenging aspect of patient recover
 ## 🏗️ Architecture
 
 ### System Overview
-
-![Architecture Diagram](docs/images/architecture_diagram.png)
 
 *Complete data flow from patient upload to real-time dashboard updates*
 
@@ -165,9 +163,6 @@ Post-surgical wound care is a critical yet challenging aspect of patient recover
 ---
 
 ## 🛠️ Technology Stack
-
-![Technology Stack](docs/images/tech_stack.png)
-
 <div align="center">
 
 ### Core Technologies
