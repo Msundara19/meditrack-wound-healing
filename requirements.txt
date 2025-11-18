@@ -3,7 +3,7 @@
 
 # Core Framework
 pathway>=0.8.0
-python>=3.9.0
+#python>=3.9.0
 
 # Computer Vision
 opencv-python>=4.8.0
