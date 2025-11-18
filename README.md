@@ -522,7 +522,7 @@ meditrack-wound-healing/
 - [x] Aparavi PHI detection integration
 - [x] Streamlit dashboard
 
-### Phase 2: Enhanced Features (In Progress)
+### Phase 2: Enhanced Features 
 - [ ] Mobile app (iOS/Android)
 - [ ] Telehealth video consultations
 - [ ] Integration with EHR systems (HL7 FHIR)
@@ -588,7 +588,7 @@ mypy src/
 
 ## 📜 License
 
-This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **MIT License** 
 
 ```
 MIT License
@@ -714,7 +714,5 @@ This project builds upon research in:
 **Team**: Meenakshi Sridharan and Akshitha Priadharshini | **Track**: Open Innovation (Healthcare AI)
 
 ---
-
-![Footer](docs/images/banner.png)
 
 </div>
